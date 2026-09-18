@@ -1,0 +1,597 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import pyttsx3
+import csv
+import time
+from datetime import datetime
+from sklearn.neighbors import KNeighborsClassifier
+
+# =========================================================
+# SIGNBRIDGE AI - SIGN LANGUAGE READER
+# =========================================================
+
+APP_NAME = "SignBridge AI"
+
+# ---------- TEXT TO SPEECH ----------
+engine = pyttsx3.init()
+engine.setProperty("rate", 150)
+
+# ---------- MEDIAPIPE ----------
+mp_hands = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
+)
+
+# ---------- GUI ----------
+root = tk.Tk()
+root.title(APP_NAME)
+root.geometry("1100x700")
+root.configure(bg="#101827")
+
+# ---------- DATA ----------
+sentence = ""
+history = []
+last_sign = ""
+last_time = 0
+
+# =========================================================
+# HAND LANDMARK FEATURES
+# =========================================================
+
+def get_features(hand_landmarks):
+    points = []
+
+    base = hand_landmarks.landmark[0]
+
+    for p in hand_landmarks.landmark:
+        points.append(p.x - base.x)
+        points.append(p.y - base.y)
+        points.append(p.z - base.z)
+
+    return points
+
+
+# =========================================================
+# SIMPLE SIGN RECOGNITION
+# =========================================================
+
+def recognize_sign(hand):
+    lm = hand.landmark
+
+    # Finger tip and joint indexes
+    fingers = [
+        (8, 6),    # index
+        (12, 10),  # middle
+        (16, 14),  # ring
+        (20, 18)   # pinky
+    ]
+
+    opened = 0
+
+    for tip, joint in fingers:
+        if lm[tip].y < lm[joint].y:
+            opened += 1
+
+    # Thumb
+    thumb_open = abs(lm[4].x - lm[2].x) > 0.08
+
+    # Basic gesture dictionary
+    if opened == 0:
+        return "A"
+
+    if opened == 1:
+        return "L"
+
+    if opened == 2:
+        return "V"
+
+    if opened == 3:
+        return "W"
+
+    if opened == 4 and thumb_open:
+        return "HELLO"
+
+    return "UNKNOWN"
+
+
+# =========================================================
+# CAMERA
+# =========================================================
+
+cap = None
+running = False
+
+def start_camera():
+    global cap, running
+
+    if running:
+        return
+
+    cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        messagebox.showerror("Camera Error", "Unable to open webcam.")
+        return
+
+    running = True
+    status_label.config(
+        text="● CAMERA CONNECTED",
+        fg="#22c55e"
+    )
+
+    update_camera()
+
+
+def stop_camera():
+    global running, cap
+
+    running = False
+
+    if cap:
+        cap.release()
+        cap = None
+
+    camera_label.config(image="")
+    status_label.config(
+        text="● CAMERA OFFLINE",
+        fg="#ef4444"
+    )
+
+
+def update_camera():
+    global last_sign, last_time
+
+    if not running or cap is None:
+        return
+
+    success, frame = cap.read()
+
+    if not success:
+        root.after(10, update_camera)
+        return
+
+    frame = cv2.flip(frame, 1)
+
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    result = hands.process(rgb)
+
+    detected = "UNKNOWN"
+    confidence = 0
+
+    if result.multi_hand_landmarks:
+
+        for hand in result.multi_hand_landmarks:
+
+            mp_draw.draw_landmarks(
+                frame,
+                hand,
+                mp_hands.HAND_CONNECTIONS
+            )
+
+            detected = recognize_sign(hand)
+
+            if detected != "UNKNOWN":
+                confidence = 95
+            else:
+                confidence = 30
+
+            # Prevent repeated predictions
+            current = time.time()
+
+            if (
+                detected != "UNKNOWN"
+                and detected != last_sign
+                and current - last_time > 1
+            ):
+                add_sign(detected)
+                last_sign = detected
+                last_time = current
+
+    prediction_label.config(
+        text=detected,
+        fg="#22c55e" if detected != "UNKNOWN" else "#f59e0b"
+    )
+
+    confidence_label.config(
+        text=f"Confidence: {confidence}%"
+    )
+
+    # Camera image
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    from PIL import Image, ImageTk
+
+    img = Image.fromarray(img)
+    img = img.resize((650, 480))
+
+    photo = ImageTk.PhotoImage(img)
+
+    camera_label.config(image=photo)
+    camera_label.image = photo
+
+    root.after(10, update_camera)
+
+
+# =========================================================
+# TEXT PROCESSING
+# =========================================================
+
+def add_sign(sign):
+
+    global sentence
+
+    if sign == "HELLO":
+        sentence += "Hello "
+
+    elif sign == "A":
+        sentence += "A"
+
+    elif sign == "L":
+        sentence += "L"
+
+    elif sign == "V":
+        sentence += "V"
+
+    elif sign == "W":
+        sentence += "W"
+
+    sentence_label.config(text=sentence)
+
+    if sentence.strip():
+        history.insert(
+            0,
+            (
+                datetime.now().strftime("%H:%M:%S"),
+                sign,
+                sentence.strip()
+            )
+        )
+
+        update_history()
+
+
+def add_space():
+    global sentence
+    sentence += " "
+    sentence_label.config(text=sentence)
+
+
+def backspace():
+    global sentence
+    sentence = sentence[:-1]
+    sentence_label.config(text=sentence)
+
+
+def clear_text():
+    global sentence
+    sentence = ""
+    sentence_label.config(text="")
+
+
+# =========================================================
+# SPEECH
+# =========================================================
+
+def speak():
+
+    text = sentence.strip()
+
+    if not text:
+        messagebox.showinfo(
+            "Speech",
+            "There is no text to speak."
+        )
+        return
+
+    engine.say(text)
+    engine.runAndWait()
+
+
+# =========================================================
+# HISTORY
+# =========================================================
+
+def update_history():
+
+    for item in history_tree.get_children():
+        history_tree.delete(item)
+
+    for row in history[:20]:
+        history_tree.insert(
+            "",
+            "end",
+            values=row
+        )
+
+
+def save_history():
+
+    if not history:
+        messagebox.showinfo(
+            "History",
+            "No recognition history available."
+        )
+        return
+
+    path = filedialog.asksaveasfilename(
+        defaultextension=".csv",
+        filetypes=[("CSV File", "*.csv")]
+    )
+
+    if not path:
+        return
+
+    with open(
+        path,
+        "w",
+        newline="",
+        encoding="utf-8"
+    ) as f:
+
+        writer = csv.writer(f)
+
+        writer.writerow([
+            "Time",
+            "Sign",
+            "Sentence"
+        ])
+
+        writer.writerows(history)
+
+    messagebox.showinfo(
+        "Saved",
+        "Recognition history saved successfully."
+    )
+
+
+# =========================================================
+# UI
+# =========================================================
+
+header = tk.Frame(
+    root,
+    bg="#172033",
+    height=70
+)
+header.pack(fill="x")
+
+tk.Label(
+    header,
+    text="🤟 SignBridge AI",
+    bg="#172033",
+    fg="white",
+    font=("Segoe UI", 24, "bold")
+).pack(side="left", padx=25, pady=15)
+
+status_label = tk.Label(
+    header,
+    text="● CAMERA OFFLINE",
+    bg="#172033",
+    fg="#ef4444",
+    font=("Segoe UI", 10, "bold")
+)
+status_label.pack(side="right", padx=25)
+
+
+main = tk.Frame(
+    root,
+    bg="#101827"
+)
+main.pack(fill="both", expand=True, padx=20, pady=20)
+
+# ---------- LEFT ----------
+left = tk.Frame(
+    main,
+    bg="#172033"
+)
+left.pack(
+    side="left",
+    fill="both",
+    expand=True,
+    padx=(0, 10)
+)
+
+tk.Label(
+    left,
+    text="LIVE CAMERA",
+    bg="#172033",
+    fg="white",
+    font=("Segoe UI", 14, "bold")
+).pack(anchor="w", padx=15, pady=10)
+
+camera_label = tk.Label(
+    left,
+    bg="#0b1220"
+)
+camera_label.pack(
+    fill="both",
+    expand=True,
+    padx=15,
+    pady=10
+)
+
+button_frame = tk.Frame(
+    left,
+    bg="#172033"
+)
+button_frame.pack(pady=10)
+
+tk.Button(
+    button_frame,
+    text="▶ Start Camera",
+    command=start_camera,
+    bg="#2563eb",
+    fg="white",
+    relief="flat",
+    padx=15,
+    pady=8
+).pack(side="left", padx=5)
+
+tk.Button(
+    button_frame,
+    text="■ Stop",
+    command=stop_camera,
+    bg="#dc2626",
+    fg="white",
+    relief="flat",
+    padx=15,
+    pady=8
+).pack(side="left", padx=5)
+
+# ---------- RIGHT ----------
+right = tk.Frame(
+    main,
+    bg="#172033",
+    width=350
+)
+right.pack(
+    side="right",
+    fill="both",
+    padx=(10, 0)
+)
+right.pack_propagate(False)
+
+tk.Label(
+    right,
+    text="DETECTED SIGN",
+    bg="#172033",
+    fg="#94a3b8",
+    font=("Segoe UI", 10, "bold")
+).pack(pady=(25, 5))
+
+prediction_label = tk.Label(
+    right,
+    text="UNKNOWN",
+    bg="#172033",
+    fg="#f59e0b",
+    font=("Segoe UI", 30, "bold")
+)
+prediction_label.pack()
+
+confidence_label = tk.Label(
+    right,
+    text="Confidence: 0%",
+    bg="#172033",
+    fg="#94a3b8",
+    font=("Segoe UI", 11)
+)
+confidence_label.pack(pady=5)
+
+tk.Label(
+    right,
+    text="GENERATED TEXT",
+    bg="#172033",
+    fg="#94a3b8",
+    font=("Segoe UI", 10, "bold")
+).pack(anchor="w", padx=20, pady=(30, 5))
+
+sentence_label = tk.Label(
+    right,
+    text="",
+    bg="#0b1220",
+    fg="white",
+    anchor="nw",
+    justify="left",
+    wraplength=300,
+    font=("Segoe UI", 16)
+)
+sentence_label.pack(
+    fill="x",
+    padx=20,
+    ipady=30
+)
+
+controls = tk.Frame(
+    right,
+    bg="#172033"
+)
+controls.pack(pady=15)
+
+for txt, cmd in [
+    ("Space", add_space),
+    ("⌫ Delete", backspace),
+    ("Clear", clear_text),
+    ("🔊 Speak", speak)
+]:
+    tk.Button(
+        controls,
+        text=txt,
+        command=cmd,
+        bg="#2563eb",
+        fg="white",
+        relief="flat",
+        padx=10,
+        pady=7
+    ).pack(side="left", padx=3)
+
+tk.Label(
+    right,
+    text="RECOGNITION HISTORY",
+    bg="#172033",
+    fg="#94a3b8",
+    font=("Segoe UI", 10, "bold")
+).pack(anchor="w", padx=20, pady=(15, 5))
+
+history_tree = ttk.Treeview(
+    right,
+    columns=("Time", "Sign", "Sentence"),
+    show="headings",
+    height=7
+)
+
+for c, w in [
+    ("Time", 65),
+    ("Sign", 75),
+    ("Sentence", 180)
+]:
+    history_tree.heading(c, text=c)
+    history_tree.column(c, width=w)
+
+history_tree.pack(
+    fill="both",
+    expand=True,
+    padx=20
+)
+
+tk.Button(
+    right,
+    text="💾 Export History",
+    command=save_history,
+    bg="#16a34a",
+    fg="white",
+    relief="flat",
+    pady=8
+).pack(fill="x", padx=20, pady=15)
+
+
+# =========================================================
+# CLEAN EXIT
+# =========================================================
+
+def close():
+    stop_camera()
+    hands.close()
+    engine.stop()
+    root.destroy()
+
+
+root.protocol("WM_DELETE_WINDOW", close)
+
+root.mainloop()
+'''
+
+path = Path("/mnt/data/signbridge_ai.py")
+path.write_text(code, encoding="utf-8")
+print(f"Created {path}")
+print(f"Lines: {len(code.splitlines())}")
+print("Note: Pillow is required by the camera display, so install it with: pip install pillow")
+print("Dependencies: opencv-python mediapipe numpy scikit-learn pyttsx3 pillow")
+print("Run: python signbridge_ai.py")
