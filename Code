@@ -1,13 +1,11 @@
 import cv2
 import mediapipe as mp
-import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import pyttsx3
 import csv
 import time
 from datetime import datetime
-from sklearn.neighbors import KNeighborsClassifier
 
 # =========================================================
 # SIGNBRIDGE AI - SIGN LANGUAGE READER
@@ -140,6 +138,7 @@ def stop_camera():
         cap = None
 
     camera_label.config(image="")
+    camera_label.image = None
     status_label.config(
         text="● CAMERA OFFLINE",
         fg="#ef4444"
@@ -155,7 +154,8 @@ def update_camera():
     success, frame = cap.read()
 
     if not success:
-        root.after(10, update_camera)
+        stop_camera()
+        messagebox.showerror("Camera Error", "Unable to read frames from the webcam.")
         return
 
     frame = cv2.flip(frame, 1)
@@ -179,12 +179,15 @@ def update_camera():
             detected = recognize_sign(hand)
 
             if detected != "UNKNOWN":
-                confidence = 95
+                confidence = 90
             else:
-                confidence = 30
+                confidence = 0
 
             # Prevent repeated predictions
             current = time.time()
+
+            if detected == "UNKNOWN":
+                last_sign = ""
 
             if (
                 detected != "UNKNOWN"
@@ -201,13 +204,11 @@ def update_camera():
     )
 
     confidence_label.config(
-        text=f"Confidence: {confidence}%"
+        text=f"Rule match: {confidence}%"
     )
 
     # Camera image
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    from PIL import Image, ImageTk
 
     img = Image.fromarray(img)
     img = img.resize((650, 480))
@@ -231,17 +232,10 @@ def add_sign(sign):
     if sign == "HELLO":
         sentence += "Hello "
 
-    elif sign == "A":
-        sentence += "A"
-
-    elif sign == "L":
-        sentence += "L"
-
-    elif sign == "V":
-        sentence += "V"
-
-    elif sign == "W":
-        sentence += "W"
+    elif sign in ("A", "L", "V", "W"):
+        if sentence and not sentence.endswith(" "):
+            sentence += " "
+        sentence += sign
 
     sentence_label.config(text=sentence)
 
@@ -579,19 +573,13 @@ tk.Button(
 def close():
     stop_camera()
     hands.close()
-    engine.stop()
+    try:
+        engine.stop()
+    except Exception:
+        pass
     root.destroy()
 
 
 root.protocol("WM_DELETE_WINDOW", close)
 
 root.mainloop()
-'''
-
-path = Path("/mnt/data/signbridge_ai.py")
-path.write_text(code, encoding="utf-8")
-print(f"Created {path}")
-print(f"Lines: {len(code.splitlines())}")
-print("Note: Pillow is required by the camera display, so install it with: pip install pillow")
-print("Dependencies: opencv-python mediapipe numpy scikit-learn pyttsx3 pillow")
-print("Run: python signbridge_ai.py")
